@@ -98,7 +98,7 @@ def chat(user_input):
     try:
         user_input = validate_input(user_input)
     except ValueError as e:
-        print(f"  ⚠ {e}")
+        print(f"{e}")
         return
     
     messages.append({
