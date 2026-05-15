@@ -1,5 +1,4 @@
 # guardrails.py
-import re
 import io
 from contextlib import redirect_stdout
 import pandas as pd

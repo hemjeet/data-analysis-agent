@@ -54,7 +54,7 @@ class ErrorBudget:
 
     def record(self, result: str) -> bool:
         """Returns True if the result is an error and budget is exceeded."""
-        if result.startswith("Error:") or result.startswith("Blocked:"):
+        if ("Error:" in result) or ("Blocked:" in result):
             self.count += 1
             self.last_error = result
             if self.count > self.max:
@@ -106,7 +106,6 @@ def check_answer_quality(answer: str, tool_was_called: bool) -> str:
 
 # ── Full agent turn with all error handling ────────────────
 def run_agent_turn(
-    user_msg: str,
     messages: list,
     client: anthropic.Anthropic,
     system: str,

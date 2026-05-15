@@ -3,11 +3,9 @@ import json
 import pathlib
 from dotenv import load_dotenv
 import pandas as pd
-import io
-from contextlib import redirect_stdout
 from config import get_system_prompt
 from cost_control import CostTracker, trim_messages, trim_tool_outputs, context_is_safe, route, make_cached_system
-from guradrails import validate_input
+from guradrails import validate_input, validate_output, run_python_safe
 from retry import run_agent_turn
 
 # ── Load env ───────────────────────────────────────────────
@@ -43,24 +41,9 @@ Always use print() to show your results.
 ]
 
 # ── Tool functions ─────────────────────────────────────────
-def run_python(code: str) -> str:
-    output = io.StringIO()
-
-    try:
-        with redirect_stdout(output):
-            exec(code, {"df": df, "pd": pd})
-
-        result = output.getvalue()
-
-        return result if result else "Code ran but no output. Did you use print()?"
-
-    except Exception as e:
-        return f"Error: {e}"
-
-
 def run_tool(tool_name, tool_input):
     if tool_name == "run_python":
-        return run_python(tool_input["code"])
+        return run_python_safe(tool_input["code"], df)
 
     return f"Unknown tool: {tool_name}"
 
@@ -105,8 +88,18 @@ def chat(user_input):
     print(f"\nYou: {user_input}")
     print("-" * 40)
     global messages
+
+    if user_input.lower() == "reset":
+        messages = []
+        save_memory(messages)
+        print("Session cleared.")
+        return
     
-    user_input = validate_input(user_input)
+    try:
+        user_input = validate_input(user_input)
+    except ValueError as e:
+        print(f"  ⚠ {e}")
+        return
     
     messages.append({
         "role": "user",
@@ -123,7 +116,6 @@ def chat(user_input):
         return
     
     answer, messages = run_agent_turn(
-        user_msg    = user_input,
         messages    = trimmed,
         client      = client,
         system      = cached_system,   
@@ -136,15 +128,10 @@ def chat(user_input):
     # Note: run_agent_turn doesn't return usage in this iteration.
     # Cost tracking would require modification of run_agent_turn.
     tracker.record(model, None)  # track cost placeholder
+    
+    answer = validate_output(answer)
     print(f"Assistant: {answer}")
     save_memory(messages)
-
-    # handle reset command in main loop:
-    if user_input.lower() == "reset":
-        messages = []
-        save_memory(messages)
-        print("Session cleared.")
-        return
 
     
 # ── Run it ─────────────────────────────────────────────────

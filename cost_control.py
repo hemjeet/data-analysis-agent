@@ -131,7 +131,7 @@ class CostTracker:
                 f"cache savings visible in usage.cache_read_input_tokens")
 
     def print_breakdown(self):
-        print(f"\n── Session cost ──────────────────")
+        print("\n── Session cost ──────────────────")
         for model, cost in self.by_model.items():
             label = model.split("-")[1]          # haiku / sonnet
             print(f"  {label:10s} ${cost:.5f}")
