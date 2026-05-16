@@ -36,11 +36,11 @@ COMPLEX_SIGNALS = ["why","explain","compare","analyse","trend",
 
 MODELS = {
     "simple":  "claude-haiku-4-5",
-    "complex": "claude-sonnet-4-20250514",
+    "complex": "claude-sonnet-4-6",
 }
 MAX_TOKENS = {
-    "simple":  512,
-    "complex": 1500,
+    "simple":  1024,
+    "complex": 2048,
 }
 
 def classify_query(query: str) -> str:

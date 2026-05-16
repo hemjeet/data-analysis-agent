@@ -37,7 +37,7 @@ def api_call_with_retry(client: anthropic.Anthropic, max_retries: int = 4, **kwa
                 raise
             wait = (2 ** attempt) + random.uniform(0, 1)  # jitter
             log.warning(f"Retry {attempt + 1}/{max_retries} in {wait:.1f}s — {type(e).__name__}")
-            print(f"  ↻ API error, retrying in {wait:.1f}s…")
+            print(f"  [retry] API error, retrying in {wait:.1f}s...")
             time.sleep(wait)
 
 
@@ -148,10 +148,12 @@ def run_agent_turn(
         messages.append({"role": "assistant", "content": content})
 
         # ── Final answer ──────────────────────────────────
-        if response.stop_reason == "end_turn":
+        if response.stop_reason != "tool_use":
             answer = " ".join(
                 b.text for b in content if hasattr(b, "text")
             )
+            if response.stop_reason == "max_tokens":
+                answer += "\n\n[Warning: Response was truncated due to token limit]"
             answer = check_answer_quality(answer, tool_called)
             return answer, messages
 
@@ -170,7 +172,7 @@ def run_agent_turn(
                 )
 
             tool_called = True
-            print(f"\n  ↳ {block.name}({list(block.input.keys())})")
+            print(f"\n  -> {block.name}({list(block.input.keys())})")
 
             result = run_tool_fn(block.name, block.input)
 
@@ -188,6 +190,9 @@ def run_agent_turn(
                 "content": result,
             })
 
+        if not tool_results:
+            return "Unexpected API response: no tools were called. Please try again.", messages
+
         messages.append({"role": "user", "content": tool_results})
 
     return (
@@ -195,3 +200,122 @@ def run_agent_turn(
         "Try asking a more specific question.",
         messages,
     )
+
+
+# ── Streaming variant for Streamlit ───────────────────────
+def run_agent_turn_streaming(
+    messages: list,
+    client: anthropic.Anthropic,
+    system: str,
+    tools: list,
+    run_tool_fn,
+    model: str = "claude-haiku-4-5",
+    max_steps: int = 10,
+    max_tokens: int = 4096,
+):
+    """
+    Streaming version of run_agent_turn.
+
+    Generator yielding event dicts:
+      text_delta    — a chunk of streamed text
+      thinking_done — signals that preceding text was intermediate (tool calls follow)
+      tool_start    — a tool is about to execute
+      tool_end      — tool finished with result
+      end           — final answer + updated messages
+      error         — unrecoverable error
+    """
+    budget = ErrorBudget(max_errors=2)
+    detector = LoopDetector()
+    tool_called = False
+
+    for step in range(max_steps):
+
+        # ── Streaming API call ────────────────────────────
+        try:
+            with client.messages.stream(
+                model=model,
+                max_tokens=max_tokens,
+                system=system,
+                tools=tools,
+                messages=messages,
+            ) as stream:
+                for text in stream.text_stream:
+                    yield {"type": "text_delta", "text": text}
+                response = stream.get_final_message()
+
+        except anthropic.AuthenticationError:
+            yield {"type": "error", "text": "Auth failed -- check ANTHROPIC_API_KEY"}
+            return
+        except anthropic.BadRequestError as e:
+            yield {"type": "error", "text": f"Bad request: {e}"}
+            return
+        except Exception as e:
+            yield {"type": "error", "text": f"API error: {e}"}
+            return
+
+        content = response.content
+        messages.append({"role": "assistant", "content": content})
+
+        # ── Final answer ──────────────────────────────────
+        if response.stop_reason != "tool_use":
+            answer = " ".join(
+                b.text for b in content if hasattr(b, "text")
+            )
+            if response.stop_reason == "max_tokens":
+                answer += "\n\n[Warning: Response was truncated due to token limit]"
+            answer = check_answer_quality(answer, tool_called)
+            yield {"type": "end", "answer": answer, "messages": messages}
+            return
+
+        # ── Tool-use response — preceding text was thinking ──
+        yield {"type": "thinking_done"}
+
+        tool_results = []
+        for block in content:
+            if block.type != "tool_use":
+                continue
+
+            if detector.record(block.name, block.input):
+                yield {
+                    "type": "end",
+                    "answer": "I seem to be going in circles. Could you rephrase the question?",
+                    "messages": messages,
+                }
+                return
+
+            tool_called = True
+            yield {"type": "tool_start", "name": block.name, "input": block.input}
+
+            result = run_tool_fn(block.name, block.input)
+
+            yield {"type": "tool_end", "name": block.name, "result": result}
+
+            if budget.record(result):
+                yield {
+                    "type": "end",
+                    "answer": f"I hit repeated errors. Last error: {budget.last_error}",
+                    "messages": messages,
+                }
+                return
+
+            tool_results.append({
+                "type": "tool_result",
+                "tool_use_id": block.id,
+                "content": result,
+            })
+
+        if not tool_results:
+            yield {
+                "type": "end",
+                "answer": "Unexpected API response: no tools were called. Please try again.",
+                "messages": messages,
+            }
+            return
+
+        messages.append({"role": "user", "content": tool_results})
+
+    yield {
+        "type": "end",
+        "answer": "Reached the step limit. Try asking a more specific question.",
+        "messages": messages,
+    }
